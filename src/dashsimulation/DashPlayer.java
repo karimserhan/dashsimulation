@@ -34,6 +34,10 @@ public class DashPlayer {
     int buffer_size = 0; //buffered video in ms
     int rand_target_buffer = updateRandTargetBuffer(); //target buffer size (for periodic scheduling)
                                                        //randomized to add jitter
+
+    // used to calculate geometric mean of time history
+    long bandwidth_history_product = 1; // product of all bandwidths recorded
+    long bandwidth_history_length = 0; // number of bandwidths recorded
     
     /**
      * Constructor
@@ -89,18 +93,78 @@ public class DashPlayer {
     }
     
     /**
+     * Returns selected bitrate.
+     *
+     * If the current time is less than some constant, uses capacity
+     * estimation to determine best bitrate.
+     *
+     * Otherwise, uses a buffer-based approach. If the buffer is smaller than
+     * some constant, selects minimum bitrate. If the buffer is larger than
+     * some constant, selects maximum bitrate. Otherwise, slowly increases
+     * the bitrate proportional to buffer size.
+     *
      * @return video chunk bit rate selected by player
      */
     private LEVEL selectBitrate() {
-        return LEVEL.LEVEL_2;
+        // TODO adjust these constants
+        // for time in [0, buffer_buildup_time), use capacity estimation
+        final int buffer_buildup_time = 1000; // milliseconds
+        // if buffer size < min_buffer_size, use minimum bitrate
+        final int min_buffer_size = 1000; // milliseconds
+        // if buffer size > max_buffer_size, use maximum bitrate
+        final int max_buffer_size = 10000; // milliseconds
+
+        if (current_time < buffer_buildup_time) {
+            return getNextLowestBitrate(getEstimatedCapacity());
+        }
+        else if (buffer_size < min_buffer_size) {
+            return LEVEL.LEVEL_1;
+        }
+        else if (buffer_size > max_buffer_size) {
+            return LEVEL.LEVEL_6;
+        }
+        else {
+            // TODO adjust the 1.0
+            return getNextLowestBitrate(
+                    (int)Math.round(
+                      LEVEL.LEVEL_1.getValue() + 1.0 * Math.sqrt(buffer_size)
+                    )
+            );
+        }
     }
     
     /**
+     * Returns estimated bandwidth capacity.
+     *
+     * Calculates geometric mean of all past bandwidth measurements.
+     *
      * @return bandwidth estimated by player
-     * TODO: geometric mean / harmonic mean (suggested in 
      */
-    private int estimateSelectedBandwidth() {
-        return -1;
+    private int getEstimatedCapacity() {
+        bandwidth_history_product *= current_bandwidth;
+        bandwidth_history_length += 1;
+        return (int)Math.round(Math.pow(bandwidth_history_product,
+                                        1 / bandwidth_history_length));
+    }
+
+    /**
+     * Returns next lowest bitrate according to LEVEL enum.
+     *
+     * @return next lowest bitrate
+     */
+    private LEVEL getNextLowestBitrate(int bitrate) {
+        if (bitrate < LEVEL.LEVEL_2.getValue())
+            return LEVEL.LEVEL_1;
+        else if (bitrate < LEVEL.LEVEL_3.getValue())
+            return LEVEL.LEVEL_2;
+        else if (bitrate < LEVEL.LEVEL_4.getValue())
+            return LEVEL.LEVEL_3;
+        else if (bitrate < LEVEL.LEVEL_5.getValue())
+            return LEVEL.LEVEL_4;
+        else if (bitrate < LEVEL.LEVEL_6.getValue())
+            return LEVEL.LEVEL_5;
+        else
+            return LEVEL.LEVEL_6;
     }
     
     /**
