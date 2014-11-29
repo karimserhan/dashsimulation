@@ -8,14 +8,19 @@ import java.util.TimerTask;
 
 //bitrate levels in kbps
 enum LEVEL {
-    LEVEL_1(250), LEVEL_2(500), LEVEL_3(750), LEVEL_4(1000), LEVEL_5(1500), LEVEL_6(3000);
+    LEVEL_1(250,1), LEVEL_2(500,2), LEVEL_3(750,3), LEVEL_4(1000,4), LEVEL_5(1500,5), LEVEL_6(3000,6);
     
     private final int value;
-    private LEVEL(final int value) { this.value = value; }
+    private final int level;
+    private LEVEL(final int value, final int level) { this.value = value; this.level = level; }
     /**
      * @return bit rate in kbps of level
      */
     public int getValue() { return value; }
+    /**
+     * @return level
+     */
+    public int getLevel() { return level; }
 };
 
 public class DashPlayer {
@@ -38,6 +43,10 @@ public class DashPlayer {
     // used to calculate geometric mean of time history
     long bandwidth_history_product = 1; // product of all bandwidths recorded
     long bandwidth_history_length = 0; // number of bandwidths recorded
+
+    //used to calculate bandwidth utilization
+    int bandwidth_sum = 0; //sum of all bandwidths observed
+    int bitrate_sum = 0;  //sum of all bitrates
     
     /**
      * Constructor
@@ -56,6 +65,7 @@ public class DashPlayer {
             step();
             current_time += step_duration;
         }
+        System.out.println("Bandwidth utilization = " + (bitrate_sum*100.0/bandwidth_sum + "%"));
     }
     
     /**
@@ -85,9 +95,11 @@ public class DashPlayer {
             }
         }
         //play video
+        bandwidth_sum += current_bandwidth;
+        bitrate_sum += selected_bitrate.getValue();
         if (buffer_size > 0) {
             buffer_size -= step_duration;
-            System.out.println(current_time + "\t" + selected_bitrate.getValue()); //log
+            System.out.println(current_time + "\t" + selected_bitrate.getLevel()); //log
         }
         else { buffer_size = 0; System.out.println(current_time + "\t0"); }
     }
@@ -112,7 +124,7 @@ public class DashPlayer {
         // if buffer size < min_buffer_size, use minimum bitrate
         final int min_buffer_size = 1000; // milliseconds
         // if buffer size > max_buffer_size, use maximum bitrate
-        final int max_buffer_size = 10000; // milliseconds
+        final int max_buffer_size = rand_target_buffer; // milliseconds
 
         if (current_time < buffer_buildup_time) {
             return getNextLowestBitrate(getEstimatedCapacity());
@@ -127,7 +139,7 @@ public class DashPlayer {
             // TODO adjust the 1.0
             return getNextLowestBitrate(
                     (int)Math.round(
-                      LEVEL.LEVEL_1.getValue() + 1.0 * Math.sqrt(buffer_size)
+                      LEVEL.LEVEL_1.getValue() + 10.0 * Math.sqrt(buffer_size)
                     )
             );
         }
@@ -144,7 +156,7 @@ public class DashPlayer {
         bandwidth_history_product *= current_bandwidth;
         bandwidth_history_length += 1;
         return (int)Math.round(Math.pow(bandwidth_history_product,
-                                        1 / bandwidth_history_length));
+                                        1.0 / bandwidth_history_length));
     }
 
     /**
