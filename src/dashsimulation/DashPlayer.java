@@ -1,5 +1,6 @@
 package dashsimulation;
 
+import static dashsimulation.LEVEL.LEVEL_1;
 import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.Queue;
@@ -37,9 +38,12 @@ public class DashPlayer {
     LEVEL selected_bitrate = LEVEL.LEVEL_1; //selected bitrate of chunk being downloaded
     int remaining_chunk_bits; //number of bits remaining to complete download of current chunk
     int buffer_size = 0; //buffered video in ms
+    int buffer_threshold = 0; //when to start buffering
     int rand_target_buffer = updateRandTargetBuffer(); //target buffer size (for periodic scheduling)
                                                        //randomized to add jitter
-
+    int chunk_download_time = 0; //current download time of chunk
+    int download_time_threshold = 20000; //time after which to abandon chunk & select new rate
+    
     // used to calculate geometric mean of time history
     long bandwidth_history_product = 1; // product of all bandwidths recorded
     long bandwidth_history_length = 0; // number of bandwidths recorded
@@ -88,20 +92,29 @@ public class DashPlayer {
         
         //download video
         if (is_downloading) {
+            //update remaining bits
             remaining_chunk_bits -= step_duration*current_bandwidth;
-            if (remaining_chunk_bits <= 0) {
+            //update chunk download time
+            chunk_download_time += step_duration;
+            if (remaining_chunk_bits <= 0) { //finished downloading chunk
                 buffer_size += chunk_duration;
                 is_downloading = false;
-            }
+            }            
         }
         //play video
         bandwidth_sum += current_bandwidth;
         bitrate_sum += selected_bitrate.getValue();
-        if (buffer_size > 0) {
+        
+        if (buffer_size > buffer_threshold) {
+            buffer_threshold = 0;
             buffer_size -= step_duration;
             System.out.println(current_time + "\t" + selected_bitrate.getLevel()); //log
         }
-        else { buffer_size = 0; System.out.println(current_time + "\t0"); }
+        else { 
+            buffer_size = 0; 
+            buffer_threshold = 1000;
+            System.out.println(current_time + "\t0\t" + selected_bitrate.getLevel() + "\t" + buffer_size); 
+        }
     }
     
     /**
@@ -117,33 +130,80 @@ public class DashPlayer {
      *
      * @return video chunk bit rate selected by player
      */
+    
+    
+    boolean incremented = false;
+    int transitions = 0;
+    int timer = 0;
+    int last_increment_time;
+    
     private LEVEL selectBitrate() {
         // TODO adjust these constants
         // for time in [0, buffer_buildup_time), use capacity estimation
         final int buffer_buildup_time = 1000; // milliseconds
         // if buffer size < min_buffer_size, use minimum bitrate
-        final int min_buffer_size = 1000; // milliseconds
+        final int min_buffer_size = 5000; // milliseconds
         // if buffer size > max_buffer_size, use maximum bitrate
         final int max_buffer_size = rand_target_buffer; // milliseconds
-
+        
+        int estimated_capacity = getEstimatedCapacity();
+        
+        
+        timer += step_duration;
+        if (timer >= 5000) {
+            incremented = false;
+            transitions = 0;
+            timer = 0;
+        }
+        
         if (current_time < buffer_buildup_time) {
-            return getNextLowestBitrate(getEstimatedCapacity());
+            return getNextLowestBitrate(estimated_capacity);
         }
         else if (buffer_size < min_buffer_size) {
             return LEVEL.LEVEL_1;
         }
-        else if (buffer_size > max_buffer_size) {
+        //this was causing lots of oscillations in the bandwidth
+        /*else if (buffer_size > max_buffer_size) {
             return LEVEL.LEVEL_6;
-        }
+        }*/
         else {
-            // TODO adjust the 1.0
-            return getNextLowestBitrate(
+            LEVEL next_bitrate = getNextLowestBitrate(
                     (int)Math.round(
-                      LEVEL.LEVEL_1.getValue() + 10.0 * Math.sqrt(buffer_size)
+                      LEVEL.LEVEL_1.getValue() + 8.0 * Math.sqrt(buffer_size)
                     )
             );
+            //increment linearly
+            if (next_bitrate.getLevel() > selected_bitrate.getLevel()) {
+                //if (incremented) return selected_bitrate;
+                //incremented = true;
+                next_bitrate = getNextLevel(selected_bitrate);
+            }
+            
+            if (next_bitrate.getValue() < selected_bitrate.getValue()) {
+                transitions = 1;
+                timer = 0;
+            }
+            
+            if (transitions >= 1 && next_bitrate.getValue() > selected_bitrate.getValue())
+                return selected_bitrate;
+            
+            //see if bitrate sustainable for next 5 seconds
+            int est_buffer_size = buffer_size + estimated_capacity/next_bitrate.getValue()*5000 - 5000;
+            if (est_buffer_size <= min_buffer_size)
+                return getPrevLevel(next_bitrate);
+     
+            if (next_bitrate.getValue() >= selected_bitrate.getValue()) {
+                if (current_time - last_increment_time >= 5000) {
+                    last_increment_time = current_time;
+                    return next_bitrate;
+                }
+                return selected_bitrate;
+            }
+            return next_bitrate;
         }
     }
+    
+    
     
     /**
      * Returns estimated bandwidth capacity.
@@ -178,6 +238,28 @@ public class DashPlayer {
         else
             return LEVEL.LEVEL_6;
     }
+    
+    private LEVEL getNextLevel(LEVEL level) {
+        switch(level) {
+            case LEVEL_1: return LEVEL.LEVEL_2;
+            case LEVEL_2: return LEVEL.LEVEL_3;
+            case LEVEL_3: return LEVEL.LEVEL_4;
+            case LEVEL_4: return LEVEL.LEVEL_5;
+            default: return LEVEL.LEVEL_6;
+        }
+    }
+    
+    
+    private LEVEL getPrevLevel(LEVEL level) {
+        switch(level) {
+            case LEVEL_3: return LEVEL.LEVEL_2;
+            case LEVEL_4: return LEVEL.LEVEL_3;
+            case LEVEL_5: return LEVEL.LEVEL_4;
+            case LEVEL_6: return LEVEL.LEVEL_5;
+            default: return LEVEL.LEVEL_1;
+        }
+    }
+    
     
     /**
      * @return actual bandwidth (from trace)
